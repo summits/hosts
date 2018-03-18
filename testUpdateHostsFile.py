@@ -5,29 +5,25 @@
 #
 # Python script for testing updateHostFiles.py
 
-import json
-import locale
-import os
-import re
-import shutil
-import sys
-import tempfile
-import unittest
+from updateHostsFile import (
+    Colors, PY3, colorize, display_exclusion_options, exclude_domain,
+    flush_dns_cache, gather_custom_exclusions, get_defaults, get_file_by_url,
+    is_valid_domain_format, matches_exclusions, move_hosts_file_into_place,
+    normalize_rule, path_join_robust, print_failure, print_success,
+    prompt_for_exclusions, prompt_for_move, prompt_for_flush_dns_cache,
+    prompt_for_update, query_yes_no, recursive_glob, remove_old_hosts_file,
+    supports_color, strip_rule, update_all_sources, update_readme_data,
+    update_sources_data, write_data, write_opening_header)
 
 import updateHostsFile
-from updateHostsFile import (PY3, Colors, colorize, display_exclusion_options,
-                             domain_to_idna, exclude_domain, flush_dns_cache,
-                             gather_custom_exclusions, get_defaults,
-                             get_file_by_url, is_valid_domain_format,
-                             matches_exclusions, move_hosts_file_into_place,
-                             normalize_rule, path_join_robust, print_failure,
-                             print_success, prompt_for_exclusions,
-                             prompt_for_flush_dns_cache, prompt_for_move,
-                             prompt_for_update, query_yes_no, recursive_glob,
-                             remove_old_hosts_file, strip_rule, supports_color,
-                             update_all_sources, update_readme_data,
-                             update_sources_data, write_data,
-                             write_opening_header)
+import unittest
+import tempfile
+import locale
+import shutil
+import json
+import sys
+import os
+import re
 
 if PY3:
     from io import BytesIO, StringIO
@@ -698,7 +694,7 @@ class TestNormalizeRule(BaseStdout):
         kwargs = dict(target_ip="0.0.0.0", keep_domain_comments=False)
 
         for rule in ["foo", "128.0.0.1", "bar.com/usa", "0.0.0 google",
-                     "0.1.2.3.4 foo/bar", "twitter.com"]:
+                     "0.0.0.0 1.2.34.34", "0.1.2.3.4 foo/bar", "twitter.com"]:
             self.assertEqual(normalize_rule(rule, **kwargs), (None, None))
 
             output = sys.stdout.getvalue()
@@ -739,21 +735,6 @@ class TestNormalizeRule(BaseStdout):
                 self.assertEqual(output, "")
 
                 sys.stdout = StringIO()
-
-    def test_two_ips(self):
-        for target_ip in ("0.0.0.0", "127.0.0.1", "8.8.8.8"):
-            rule = "127.0.0.1 11.22.33.44 foo"
-            expected = ("11.22.33.44", str(target_ip) + " 11.22.33.44\n")
-
-            actual = normalize_rule(rule, target_ip=target_ip,
-                                    keep_domain_comments=False)
-            self.assertEqual(actual, expected)
-
-            # Nothing gets printed if there's a match.
-            output = sys.stdout.getvalue()
-            self.assertEqual(output, "")
-
-            sys.stdout = StringIO()
 
 
 class TestStripRule(Base):
@@ -1377,150 +1358,6 @@ def mock_url_open_decode_fail(_):
     m = mock.Mock()
     m.read = read
     return m
-
-
-class DomainToIDNA(Base):
-
-    def __init__(self, *args, **kwargs):
-        super(DomainToIDNA, self).__init__(*args, **kwargs)
-
-        self.domains = [b'\xc9\xa2oogle.com', b'www.huala\xc3\xb1e.cl']
-        self.expected_domains = ['xn--oogle-wmc.com', 'www.xn--hualae-0wa.cl']
-
-    def test_empty_line(self):
-        data = ["", "\r", "\n"]
-
-        for empty in data:
-            expected = empty
-
-            actual = domain_to_idna(empty)
-            self.assertEqual(actual, expected)
-
-    def test_commented_line(self):
-        data = "# Hello World"
-        expected = data
-        actual = domain_to_idna(data)
-
-        self.assertEqual(actual, expected)
-
-    def test_simple_line(self):
-        # Test with a space as separator.
-        for i in range(len(self.domains)):
-            data = (b"0.0.0.0 " + self.domains[i]).decode('utf-8')
-            expected = "0.0.0.0 " + self.expected_domains[i]
-
-            actual = domain_to_idna(data)
-
-            self.assertEqual(actual, expected)
-
-        # Test with a tabulation as separator.
-        for i in range(len(self.domains)):
-            data = (b"0.0.0.0\t" + self.domains[i]).decode('utf-8')
-            expected = "0.0.0.0\t" + self.expected_domains[i]
-
-            actual = domain_to_idna(data)
-
-            self.assertEqual(actual, expected)
-
-    def test_multiple_space_as_separator(self):
-        # Test with multiple space as separator.
-        for i in range(len(self.domains)):
-            data = (b"0.0.0.0      " + self.domains[i]).decode('utf-8')
-            expected = "0.0.0.0      " + self.expected_domains[i]
-
-            actual = domain_to_idna(data)
-
-            self.assertEqual(actual, expected)
-
-    def test_multiple_tabs_as_separator(self):
-        # Test with multiple tabls as separator.
-        for i in range(len(self.domains)):
-            data = (b"0.0.0.0\t\t\t\t\t\t" + self.domains[i]).decode('utf-8')
-            expected = "0.0.0.0\t\t\t\t\t\t" + self.expected_domains[i]
-
-            actual = domain_to_idna(data)
-
-            self.assertEqual(actual, expected)
-
-    def test_line_with_comment_at_the_end(self):
-        # Test with a space as separator.
-        for i in range(len(self.domains)):
-            data = (b"0.0.0.0 " + self.domains[i] + b" # Hello World") \
-                .decode('utf-8')
-            expected = "0.0.0.0 " + self.expected_domains[i] + " # Hello World"
-
-            actual = domain_to_idna(data)
-
-            self.assertEqual(actual, expected)
-
-        # Test with a tabulation as separator.
-        for i in range(len(self.domains)):
-            data = (b"0.0.0.0\t" + self.domains[i] + b" # Hello World") \
-                .decode('utf-8')
-            expected = "0.0.0.0\t" + self.expected_domains[i] + \
-                " # Hello World"
-
-            actual = domain_to_idna(data)
-
-            self.assertEqual(actual, expected)
-
-        # Test with tabulation as separator of domain and comment.
-        for i in range(len(self.domains)):
-            data = (b"0.0.0.0\t" + self.domains[i] + b"\t # Hello World") \
-                .decode('utf-8')
-            expected = "0.0.0.0\t" + self.expected_domains[i] + \
-                "\t # Hello World"
-
-            actual = domain_to_idna(data)
-
-            self.assertEqual(actual, expected)
-
-        # Test with space as separator of domain and tabulation as separator
-        # of comments.
-        for i in range(len(self.domains)):
-            data = (b"0.0.0.0 " + self.domains[i] + b"  \t # Hello World") \
-                .decode('utf-8')
-            expected = "0.0.0.0 " + self.expected_domains[i] + \
-                "  \t # Hello World"
-
-            actual = domain_to_idna(data)
-
-            self.assertEqual(actual, expected)
-
-        # Test with multiple space as seprator of domain and space and
-        # tabulation as separator or comments.
-        for i in range(len(self.domains)):
-            data = (b"0.0.0.0     " + self.domains[i] + b" \t # Hello World") \
-                .decode('utf-8')
-            expected = "0.0.0.0     " + self.expected_domains[i] + \
-                " \t # Hello World"
-
-            actual = domain_to_idna(data)
-
-            self.assertEqual(actual, expected)
-
-        # Test with multiple tabulations as seprator of domain and space and
-        # tabulation as separator or comments.
-        for i in range(len(self.domains)):
-            data = (b"0.0.0.0\t\t\t" +
-                    self.domains[i] +
-                    b" \t # Hello World") \
-                        .decode('utf-8')
-            expected = "0.0.0.0\t\t\t" + self.expected_domains[i] + \
-                " \t # Hello World"
-
-            actual = domain_to_idna(data)
-
-            self.assertEqual(actual, expected)
-
-    def test_line_without_prefix(self):
-        for i in range(len(self.domains)):
-            data = self.domains[i].decode('utf-8')
-            expected = self.expected_domains[i]
-
-            actual = domain_to_idna(data)
-
-            self.assertEqual(actual, expected)
 
 
 class GetFileByUrl(BaseStdout):

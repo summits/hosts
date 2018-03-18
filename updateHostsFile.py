@@ -6,26 +6,23 @@
 # This Python script will combine all the host files you provide
 # as sources into one, unique host file to keep you internet browsing happy.
 
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
+from __future__ import (absolute_import, division,
+                        print_function, unicode_literals)
+from glob import glob
 
-import argparse
-import fnmatch
-import json
-import locale
 import os
+import locale
 import platform
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
 import time
-from glob import glob
-
-import lxml  # noqa: F401
-from bs4 import BeautifulSoup
+import fnmatch
+import argparse
+import socket
+import json
 
 # Detecting Python 3 for version-dependent implementations
 PY3 = sys.version_info >= (3, 0)
@@ -38,10 +35,7 @@ else:  # Python 2
     raw_input = raw_input  # noqa
 
 # Syntactic sugar for "sudo" command in UNIX / Linux
-if platform.system() == "OpenBSD":
-    SUDO = ["/usr/bin/doas"]
-else:
-    SUDO = ["/usr/bin/env", "sudo"]
+SUDO = "/usr/bin/sudo"
 
 
 # Project Settings
@@ -620,8 +614,9 @@ def update_all_sources(source_data_filename, host_filename):
             updated_file = get_file_by_url(update_url)
 
             # spin the transforms as required
-            for transform in update_transforms:
-                updated_file = transform_methods[transform](updated_file)
+            if len(update_transforms) > 0:
+                for transform in update_transforms:
+                    updated_file = transform_methods[transform](updated_file)
 
             # get rid of carriage-return symbols
             updated_file = updated_file.replace("\r", "")
@@ -844,9 +839,6 @@ def normalize_rule(rule, target_ip, keep_domain_comments):
         and spacing reformatted.
     """
 
-    """
-    first try: IP followed by domain
-    """
     regex = r'^\s*(\d{1,3}\.){3}\d{1,3}\s+([\w\.-]+[a-zA-Z])(.*)'
     result = re.search(regex, rule)
 
@@ -862,26 +854,6 @@ def normalize_rule(rule, target_ip, keep_domain_comments):
 
         return hostname, rule + "\n"
 
-    """
-    next try: IP address followed by host IP address
-    """
-    regex = r'^\s*(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s*(.*)'
-    result = re.search(regex, rule)
-
-    if result:
-        ip_host, suffix = result.group(2, 3)
-        # Explicitly trim the ip host.
-        ip_host = ip_host.strip()
-        rule = "%s %s" % (target_ip, ip_host)
-
-        if suffix and keep_domain_comments:
-            rule += " #%s" % suffix
-
-        return ip_host, rule + "\n"
-
-    """
-    finally, if we get here, just belch to screen
-    """
     print("==>%s<==" % rule)
     return None, None
 
@@ -956,6 +928,9 @@ def write_opening_header(final_file, **header_params):
                            "StevenBlack/hosts\n#\n")
     write_data(final_file, "# ==============================="
                            "================================\n")
+    write_data(final_file, "\n")
+    # summits adding own hosts
+    write_data(final_file, "192.168.86.200 freenas\n")
     write_data(final_file, "\n")
 
     if not header_params["skipstatichosts"]:
@@ -1043,7 +1018,7 @@ def move_hosts_file_into_place(final_file):
     if os.name == "posix":
         print("Moving the file requires administrative privileges. "
               "You might need to enter your password.")
-        if subprocess.call(SUDO + ["cp", filename, "/etc/hosts"]):
+        if subprocess.call([SUDO, "cp", filename, "/etc/hosts"]):
             print_failure("Moving the file failed.")
     elif os.name == "nt":
         print("Automatically moving the hosts file "
@@ -1064,7 +1039,7 @@ def flush_dns_cache():
     dns_cache_found = False
 
     if platform.system() == "Darwin":
-        if subprocess.call(SUDO + ["killall", "-HUP", "mDNSResponder"]):
+        if subprocess.call([SUDO, "killall", "-HUP", "mDNSResponder"]):
             print_failure("Flushing the DNS cache failed.")
     elif os.name == "nt":
         print("Automatically flushing the DNS cache is not yet supported.")
@@ -1080,7 +1055,7 @@ def flush_dns_cache():
             if os.path.isfile(nscd_cache):
                 dns_cache_found = True
 
-                if subprocess.call(SUDO + [nscd_cache, "restart"]):
+                if subprocess.call([SUDO, nscd_cache, "restart"]):
                     print_failure(nscd_msg.format(result="failed"))
                 else:
                     print_success(nscd_msg.format(result="succeeded"))
@@ -1101,7 +1076,7 @@ def flush_dns_cache():
                 if os.path.isfile(service_file):
                     dns_cache_found = True
 
-                    if subprocess.call(SUDO + [systemctl, "restart", service]):
+                    if subprocess.call([SUDO, systemctl, "restart", service]):
                         print_failure(service_msg.format(result="failed"))
                     else:
                         print_success(service_msg.format(result="succeeded"))
@@ -1113,7 +1088,7 @@ def flush_dns_cache():
         if os.path.isfile(dns_clean_file):
             dns_cache_found = True
 
-            if subprocess.call(SUDO + [dns_clean_file, "start"]):
+            if subprocess.call([SUDO, dns_clean_file, "start"]):
                 print_failure(dns_clean_msg.format(result="failed"))
             else:
                 print_success(dns_clean_msg.format(result="succeeded"))
@@ -1154,81 +1129,6 @@ def remove_old_hosts_file(backup):
 # End File Logic
 
 
-def domain_to_idna(line):
-    """
-    Encode a domain which is presente into a line into `idna`. This way we
-    avoid the most encoding issue.
-
-    Parameters
-    ----------
-    line : str
-        The line we have to encode/decode.
-
-    Returns
-    -------
-    line : str
-        The line in a converted format.
-
-    Notes
-    -----
-    - This function encode only the domain to `idna` format because in
-        most cases, the encoding issue is due to a domain which looks like
-        `b'\xc9\xa2oogle.com'.decode('idna')`.
-    - About the splitting:
-        We split because we only want to encode the domain and not the full
-        line, which may cause some issues. Keep in mind that we split, but we
-        still concatenate once we encoded the domain.
-
-        - The following split the prefix `0.0.0.0` or `127.0.0.1` of a line.
-        - The following also split the trailing comment of a given line.
-    """
-
-    if not line.startswith('#'):
-        tabs = '\t'
-        space = ' '
-
-        tabs_position, space_position = (line.find(tabs), line.find(space))
-
-        if tabs_position > -1 and space_position > -1:
-            if space_position < tabs_position:
-                separator = space
-            else:
-                separator = tabs
-        elif not tabs_position == -1:
-            separator = tabs
-        elif not space_position == -1:
-            separator = space
-        else:
-            separator = ''
-
-        if separator:
-            splited_line = line.split(separator)
-
-            index = 1
-            while index < len(splited_line):
-                if splited_line[index]:
-                    break
-                index += 1
-
-            if '#' in splited_line[index]:
-                index_comment = splited_line[index].find('#')
-
-                if index_comment > -1:
-                    comment = splited_line[index][index_comment:]
-
-                    splited_line[index] = splited_line[index] \
-                        .split(comment)[0] \
-                        .encode("IDNA").decode("UTF-8") + \
-                        comment
-
-            splited_line[index] = splited_line[index] \
-                .encode("IDNA") \
-                .decode("UTF-8")
-            return separator.join(splited_line)
-        return line.encode("IDNA").decode("UTF-8")
-    return line.encode("UTF-8").decode("UTF-8")
-
-
 # Helper Functions
 def get_file_by_url(url):
     """
@@ -1244,17 +1144,11 @@ def get_file_by_url(url):
     url_data : str or None
         The data retrieved at that URL from the file. Returns None if the
         attempted retrieval is unsuccessful.
-
-    Note
-    ----
-    - BeautifulSoup is used in this case to avoid having to search in which
-        format we have to encode or decode data before parsing it to UTF-8.
     """
 
     try:
         f = urlopen(url)
-        soup = BeautifulSoup(f.read(), 'lxml').get_text()
-        return '\n'.join(list(map(domain_to_idna, soup.split('\n'))))
+        return f.read().decode("UTF-8")
     except Exception:
         print("Problem getting file: ", url)
 
@@ -1274,10 +1168,7 @@ def write_data(f, data):
     if PY3:
         f.write(bytes(data, "UTF-8"))
     else:
-        try:
-            f.write(str(data))
-        except UnicodeEncodeError:
-            f.write(str(data.encode("UTF-8")))
+        f.write(str(data).encode("UTF-8"))
 
 
 def list_dir_no_hidden(path):
